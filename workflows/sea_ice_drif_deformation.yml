@@ -1,0 +1,283 @@
+metadata:
+  name: deformation
+  namespace: cif
+spec:
+  templates:
+    - name: execute
+      inputs:
+        parameters:
+          - name: start_date
+            value: "20240306"
+          - name: end_date
+            value: "20240311"
+      outputs: {}
+      metadata: {}
+      steps:
+        - - name: deformation
+            template: deformation
+            arguments:
+              parameters:
+                - name: start_date
+                  value: "{{inputs.parameters.start_date}}"
+                - name: end_date
+                  value: "{{inputs.parameters.end_date}}"
+        - - name: cogify
+            template: cogify
+            arguments: {}
+        - - name: s3list
+            template: s3list
+            arguments: {}
+    - name: deformation
+      inputs:
+        parameters:
+          - name: start_date
+          - name: end_date
+      outputs:
+        artifacts:
+          - name: results
+            path: /app/docker_shared/
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: deformation/workflows/{{workflow.uid}}/results
+            archive:
+              none: {}
+          - name: outputs
+            path: /app/data/output
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: deformation/workflows/{{workflow.uid}}/output
+            archive:
+              none: {}
+          - name: working
+            path: /app/data/working
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: deformation/workflows/{{workflow.uid}}/working
+            archive:
+              none: {}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      script:
+        name: ""
+        image: swr.eu-nl.otc.t-systems.com/gtif/deformation:0.3
+        command:
+          - python
+        args:
+          - -m
+          - coresight_processingchain.sentinel_pairs.run_deformation
+          - --search_aoi=/app/coresight_processingchain/sentinel_pairs/input_anc/2023_Grise.geojson
+          - --start={{workflow.parameters.start_date}}
+          - --end={{workflow.parameters.end_date}}
+          - --process_mode=1
+          - --verbose
+        env:
+          - name: EODMS_USER
+            value: username
+          - name: EODMS_PASS
+            value: password
+          - name: CDSE_USER
+            value: username
+          - name: CDSE_PASS
+            value: password
+          - name: DOCKER_HOST
+            value: 127.0.0.1
+        resources: {}
+        volumeMounts:
+          - name: app-data-output
+            mountPath: /app/data/output
+          - name: app-data-working
+            mountPath: /app/data/working
+          - name: deformation-shared
+            mountPath: /app/docker_shared
+        securityContext:
+          runAsUser: 0
+        source: ""
+      sidecars:
+        - name: dind
+          image: docker:19.03.13-dind
+          command:
+            - dockerd-entrypoint.sh
+          env:
+            - name: DOCKER_TLS_CERTDIR
+          resources: {}
+          volumeMounts:
+            - name: app-data-working
+              mountPath: /app/data/working
+          securityContext:
+            privileged: true
+            runAsUser: 0
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+    - name: cogify
+      inputs:
+        artifacts:
+          - name: outputs_in
+            path: /workspace/input
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: deformation/workflows/{{workflow.uid}}/output
+      outputs:
+        artifacts:
+          - name: outputs
+            path: /workspace/input
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: deformation/workflows/{{workflow.uid}}/output
+            archive:
+              none: {}
+      metadata: {}
+      container:
+        name: ""
+        image: registry.gitlab.eox.at/public-images/gdal/ubuntu-full-3.10
+        command:
+          - bash
+          - -c
+        args:
+          - >
+            set -e
+
+            find /workspace/input -type f -name '*.tif' | while read -r tif; do
+              echo " → $tif"
+              tmp="${tif%.tif}.tmp.tif"
+              tmp_cog="${tif%.tif}.tmp_cog.tif"
+              echo "Converting $tmp → COG"
+              gdal_translate -of COG \
+                             "$tif" "$tmp"
+              gdalwarp -of COG -s_srs EPSG:4326 -t_srs EPSG:3857 -r bilinear -et 0 -co COMPRESS=DEFLATE "$tmp" "$tmp_cog"
+              rm "$tmp"
+              mv "$tmp_cog" "$tif"
+            done
+
+            echo "All files converted to Cloud-Optimised GeoTIFFs."
+        resources: {}
+    - name: s3list
+      inputs: {}
+      outputs:
+        parameters:
+          - name: json
+            valueFrom:
+              path: /tmp/out.json
+            globalName: urls
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: ghcr.io/eoxhub-workspaces/process-s3-files:0.0.12
+        command:
+          - sh
+          - -c
+        args:
+          - ./process_s3_files.sh --group
+            "regex=.*deformation_landmasked.*\.tif,id=output_deformation,mimetype=image/tiff"
+            --group
+            "regex=.*ft_disp.*\.geojson,id=output_feature_tracking,mimetype=application/geo+json"  --group
+            "regex=.*pm_disp_cut.*\.geojson,id=output_pm,mimetype=application/geo+json"
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: username
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: password
+          - name: AWS_S3_ENDPOINT
+            value: https://obs.eu-nl.otc.t-systems.com
+          - name: AWS_REGION
+            value: eu-nl
+          - name: BUCKET
+            value: gtif-data-cerulean1
+          - name: BPATH
+            value: deformation/workflows/{{workflow.uid}}/output
+          - name: ACL
+            value: public-read
+          - name: NUM_FILES
+            value: "20"
+          - name: DEBUG
+            value: "false"
+          - name: PUBLISH_JSON
+            value: "true"
+          - name: PUBLISH_JSON_FILENAME_ENV_VAR
+            value: ARGO_NODE_ID
+          - name: PUBLISH_JSON_FILENAME_REGEX
+            value: (pygeoapi-job-)([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})
+          - name: PUBLISH_JSON_FILENAME_REGEX_MATCH_GROUP
+            value: "2"
+          - name: PUBLISH_JSON_SUBFOLDER
+            value: /pygeoapi/resultlinks/
+          - name: PUBLISH_JSON_ACL
+            value: public-read
+        resources: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+  entrypoint: execute
+  arguments: {}
+  serviceAccountName: argo-workflow
+  volumes:
+    - name: app-data-working
+      emptyDir: {}
+    - name: app-data-output
+      emptyDir: {}
+    - name: deformation-shared
+      emptyDir: {}
+  imagePullSecrets:
+    - name: flux-cerulean

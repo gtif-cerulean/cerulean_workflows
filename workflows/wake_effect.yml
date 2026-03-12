@@ -1,0 +1,189 @@
+metadata:
+  name: wake-effect
+  namespace: cif
+spec:
+  templates:
+    - name: execute
+      inputs:
+        parameters:
+          - name: aoi
+            value: '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[2.37854,51.398349],[2.37854,51.951883],[3.486786,51.951883],[3.486786,51.398349],[2.37854,51.398349]]]}}]}'
+          - name: start_date
+            value: "2025-01-05"
+          - name: process_output_loc
+            value: /data/output
+          - name: process_output_file
+            value: final.tif
+      outputs: {}
+      metadata: {}
+      steps:
+        - - name: wake-effect
+            template: wake-effect
+            arguments:
+              parameters:
+                - name: aoi
+                  value: "{{inputs.parameters.aoi}}"
+                - name: start_date
+                  value: "{{inputs.parameters.start_date}}"
+                - name: process_output_loc
+                  value: "{{inputs.parameters.process_output_loc}}"
+                - name: process_output_file
+                  value: "{{inputs.parameters.process_output_file}}"
+        - - name: list-data
+            template: s3list
+            arguments: {}
+    - name: wake-effect
+      inputs:
+        parameters:
+          - name: aoi
+            value: '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[2.37854,51.398349],[2.37854,51.951883],[3.486786,51.951883],[3.486786,51.398349],[2.37854,51.398349]]]}}]}'
+          - name: start_date
+            value: "2025-01-05"
+          - name: process_output_loc
+            value: /data/output
+          - name: process_output_file
+            value: final.tif
+      outputs:
+        artifacts:
+          - name: message
+            path: /data/output
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: output-data-wake-effect/{{workflow.name}}
+            archive:
+              none: {}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: swr.eu-nl.otc.t-systems.com/gtif/wake_effect:1.0.0
+        command:
+          - /bin/bash
+        args:
+          - -c
+          - |
+            set -a
+            source /.env 
+            set +a 
+            mkdir -p /data/output && \
+            bash /home/app/scripts/run_process.sh \
+              '{{workflow.parameters.start_date}}T00:00:00.000Z' \
+              '{{workflow.parameters.aoi}}' \
+              '{{workflow.parameters.process_output_loc}}' \
+              '{{workflow.parameters.process_output_file}}'
+        env:
+          - name: COP_USERNAME
+            value: username
+          - name: COP_PASSWORD
+            value: password
+          - name: COPERNICUSMARINE_SERVICE_USERNAME
+            value: username
+          - name: COPERNICUSMARINE_SERVICE_PASSWORD
+            value: password
+        resources:
+          limits:
+            cpu: 750m
+            memory: 4Gi
+          requests:
+            cpu: 200m
+            memory: 512Mi
+        volumeMounts:
+          - name: data-dir
+            mountPath: /data
+      volumes:
+        - name: data-dir
+          emptyDir: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+    - name: s3list
+      inputs: {}
+      outputs:
+        parameters:
+          - name: json
+            valueFrom:
+              path: /tmp/out.json
+            globalName: urls
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: ghcr.io/eoxhub-workspaces/process-s3-files:0.0.12
+        command:
+          - sh
+          - -c
+        args:
+          - ./process_s3_files.sh --group
+            "regex=.*_COG.*\.tif,id=output_wake_effect,mimetype=image/tiff"
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: username
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: password
+          - name: AWS_S3_ENDPOINT
+            value: https://obs.eu-nl.otc.t-systems.com
+          - name: AWS_REGION
+            value: eu-nl
+          - name: BUCKET
+            value: gtif-data-cerulean1
+          - name: BPATH
+            value: output-data-wake-effect/{{workflow.name}}
+          - name: ACL
+            value: public-read
+          - name: NUM_FILES
+            value: "5"
+          - name: DEBUG
+            value: "false"
+          - name: PUBLISH_JSON
+            value: "true"
+          - name: PUBLISH_JSON_FILENAME_ENV_VAR
+            value: ARGO_NODE_ID
+          - name: PUBLISH_JSON_FILENAME_REGEX
+            value: (pygeoapi-job-)([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})
+          - name: PUBLISH_JSON_FILENAME_REGEX_MATCH_GROUP
+            value: "2"
+          - name: PUBLISH_JSON_SUBFOLDER
+            value: /pygeoapi/resultlinks/
+          - name: PUBLISH_JSON_ACL
+            value: public-read
+        resources: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+  arguments: {}
+  serviceAccountName: argo-workflow
+  imagePullSecrets:
+    - name: flux-cerulean

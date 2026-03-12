@@ -1,0 +1,225 @@
+metadata:
+  name: coastal-change-nrc
+  namespace: cif
+spec:
+  templates:
+    - name: execute
+      inputs:
+        parameters:
+          - name: lllat
+            value: "58.76410"
+          - name: lllon
+            value: "-94.21869"
+          - name: urlat
+            value: "58.76995"
+          - name: urlon
+            value: "-94.10365"
+          - name: reference_date
+            value: "2025-07-01"
+          - name: search_days_before
+            value: "30"
+          - name: search_days_after
+            value: "60"
+          - name: max_cloud_cover
+            value: "5"
+      outputs: {}
+      metadata: {}
+      steps:
+        - - name: coastal-change-detection
+            template: coastal-change-detection
+            arguments:
+              parameters:
+                - name: lllat
+                  value: "{{inputs.parameters.lllat}}"
+                - name: lllon
+                  value: "{{inputs.parameters.lllon}}"
+                - name: urlat
+                  value: "{{inputs.parameters.urlat}}"
+                - name: urlon
+                  value: "{{inputs.parameters.urlon}}"
+                - name: reference_date
+                  value: "{{inputs.parameters.reference_date}}"
+                - name: search_days_before
+                  value: "{{inputs.parameters.search_days_before}}"
+                - name: search_days_after
+                  value: "{{inputs.parameters.search_days_after}}"
+                - name: max_cloud_cover
+                  value: "{{inputs.parameters.max_cloud_cover}}"
+        - - name: s3list
+            template: s3list
+            arguments: {}
+    - name: coastal-change-detection
+      inputs:
+        parameters:
+          - name: lllat
+          - name: lllon
+          - name: urlat
+          - name: urlon
+          - name: reference_date
+          - name: search_days_before
+          - name: search_days_after
+          - name: max_cloud_cover
+      outputs:
+        artifacts:
+          - name: results
+            path: /workspace/outputs
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: coastal-change-nrc/workflows/{{workflow.uid}}/results
+            archive:
+              none: {}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: swr.eu-nl.otc.t-systems.com/gtif/nrc-coastal-detection:1.0.0
+        command:
+          - bash
+          - -lc
+        args:
+          - >
+            set -e;
+
+
+            mkdir -p /workspace/inputs /workspace/outputs;
+
+
+            . /opt/conda/etc/profile.d/conda.sh
+
+            conda activate nrc-env
+
+
+            echo "Running NRC coastal change detection...";
+
+
+
+            python /workspace/nrc-coastal-change-detection-with-sentinel2.py \
+              --bbox {{inputs.parameters.lllat}} {{inputs.parameters.lllon}} {{inputs.parameters.urlat}} {{inputs.parameters.urlon}} \
+              --reference-date {{inputs.parameters.reference_date}} \
+              --search-days-before {{inputs.parameters.search_days_before}} \
+              --search-days-after {{inputs.parameters.search_days_after}} \
+              --max-cloud-cover {{inputs.parameters.max_cloud_cover}}
+
+
+
+            echo "=== Output files saved ==="; 
+
+
+            find /workspace/outputs -maxdepth 4 -type f -print;
+        env:
+          - name: SH_CLIENT_ID
+            valueFrom:
+              secretKeyRef:
+                name: sentinelhub-credentials
+                key: SH_CLIENT_ID
+          - name: SH_INSTANCE_ID
+            valueFrom:
+              secretKeyRef:
+                name: sentinelhub-credentials
+                key: SH_INSTANCE_ID
+          - name: SH_CLIENT_NAME
+            valueFrom:
+              secretKeyRef:
+                name: sentinelhub-credentials
+                key: SH_CLIENT_NAME
+          - name: SH_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: sentinelhub-credentials
+                key: SH_CLIENT_SECRET
+        resources: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+    - name: s3list
+      inputs: {}
+      outputs:
+        parameters:
+          - name: json
+            valueFrom:
+              path: /tmp/out.json
+            globalName: urls
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: ghcr.io/eoxhub-workspaces/process-s3-files:0.0.12
+        command:
+          - sh
+          - -c
+        args:
+          - ./process_s3_files.sh --group
+            "regex=results\.geojson,id=coastal_change_geojson,mimetype=application/geo+json"
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: username
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: password
+          - name: AWS_S3_ENDPOINT
+            value: https://obs.eu-nl.otc.t-systems.com
+          - name: AWS_REGION
+            value: eu-nl
+          - name: BUCKET
+            value: gtif-data-cerulean1
+          - name: BPATH
+            value: coastal-change-nrc/workflows/{{workflow.uid}}/results
+          - name: ACL
+            value: public-read
+          - name: NUM_FILES
+            value: "10"
+          - name: DEBUG
+            value: "false"
+          - name: PUBLISH_JSON
+            value: "true"
+          - name: PUBLISH_JSON_FILENAME_ENV_VAR
+            value: ARGO_NODE_ID
+          - name: PUBLISH_JSON_FILENAME_REGEX
+            value: (pygeoapi-job-)([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})
+          - name: PUBLISH_JSON_FILENAME_REGEX_MATCH_GROUP
+            value: "2"
+          - name: PUBLISH_JSON_SUBFOLDER
+            value: /pygeoapi/resultlinks/
+          - name: PUBLISH_JSON_ACL
+            value: public-read
+        resources: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+  entrypoint: execute
+  arguments: {}
+  serviceAccountName: argo-workflow
+  imagePullSecrets:
+    - name: flux-cerulean

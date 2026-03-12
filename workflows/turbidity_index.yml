@@ -1,0 +1,197 @@
+metadata:
+  name: coastal-change-monitoring-execute
+  namespace: cif
+spec:
+  templates:
+    - name: execute
+      inputs:
+        parameters:
+          - name: aoi_json
+            value: '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-2.88,57.54],[-2.88,57.84],[-2.40,57.84],[-2.40,57.54],[-2.88,57.54]]]}}]}'
+          - name: query_date
+            value: "2025-01-31"
+          - name: cloud_cover
+            value: "10"
+          - name: data_path
+            value: /data/downloads
+          - name: process_output_loc
+            value: /data/output
+          - name: process_output_file
+            value: final.tif
+      outputs: {}
+      metadata: {}
+      steps:
+        - - name: step1
+            template: coastal-change
+            arguments:
+              parameters:
+                - name: aoi_json
+                  value: "{{inputs.parameters.aoi_json}}"
+                - name: query_date
+                  value: "{{inputs.parameters.query_date}}"
+                - name: cloud_cover
+                  value: "{{inputs.parameters.cloud_cover}}"
+                - name: data_path
+                  value: "{{inputs.parameters.data_path}}"
+                - name: process_output_loc
+                  value: "{{inputs.parameters.process_output_loc}}"
+                - name: process_output_file
+                  value: "{{inputs.parameters.process_output_file}}"
+        - - name: step2
+            template: s3list
+            arguments: {}
+    - name: coastal-change
+      inputs:
+        parameters:
+          - name: aoi_json
+            value: '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[[[-2.88,57.54],[-2.88,57.84],[-2.40,57.84],[-2.40,57.54],[-2.88,57.54]]]}}]}'
+          - name: query_date
+            value: "2025-01-31"
+          - name: cloud_cover
+            value: "10"
+          - name: data_path
+            value: /data/downloads
+          - name: process_output_loc
+            value: /data/output
+          - name: process_output_file
+            value: final.tif
+      outputs:
+        artifacts:
+          - name: message
+            path: /data/output
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: output-data/{{workflow.name}}
+            archive:
+              none: {}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: swr.eu-nl.otc.t-systems.com/gtif/coastal_change_monitoring:1.0.3
+        command:
+          - /bin/bash
+        args:
+          - -c
+          - |
+            set -a
+            source /.env 
+            set +a 
+            mkdir -p /data/output && \
+            bash /home/app/scripts/run_process.sh \
+              '{{workflow.parameters.aoi_json}}' \
+              '{{workflow.parameters.query_date}}' \
+              '{{workflow.parameters.cloud_cover}}' \
+              '{{workflow.parameters.data_path}}' \
+              '{{workflow.parameters.process_output_loc}}' \
+              '{{workflow.parameters.process_output_file}}'
+        env:
+          - name: COP_USERNAME
+            value: username
+          - name: COP_PASSWORD
+            value: password
+          - name: COPERNICUSMARINE_SERVICE_USERNAME
+            value: username
+          - name: COPERNICUSMARINE_SERVICE_PASSWORD
+            value: password
+        resources: {}
+        volumeMounts:
+          - name: data-dir
+            mountPath: /data
+      volumes:
+        - name: data-dir
+          emptyDir: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+    - name: s3list
+      inputs: {}
+      outputs:
+        parameters:
+          - name: json
+            valueFrom:
+              path: /tmp/out.json
+            globalName: urls
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: ghcr.io/eoxhub-workspaces/process-s3-files:0.0.12
+        command:
+          - sh
+          - -c
+        args:
+          - ./process_s3_files.sh --group
+            "regex=.*_COG.*\.tif,id=output_coastal,mimetype=image/tiff"
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: username
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: password
+          - name: AWS_S3_ENDPOINT
+            value: https://obs.eu-nl.otc.t-systems.com
+          - name: AWS_REGION
+            value: eu-nl
+          - name: BUCKET
+            value: gtif-data-cerulean1
+          - name: BPATH
+            value: output-data/{{workflow.name}}
+          - name: ACL
+            value: public-read
+          - name: NUM_FILES
+            value: "5"
+          - name: DEBUG
+            value: "false"
+          - name: PUBLISH_JSON
+            value: "true"
+          - name: PUBLISH_JSON_FILENAME_ENV_VAR
+            value: ARGO_NODE_ID
+          - name: PUBLISH_JSON_FILENAME_REGEX
+            value: (pygeoapi-job-)([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})
+          - name: PUBLISH_JSON_FILENAME_REGEX_MATCH_GROUP
+            value: "2"
+          - name: PUBLISH_JSON_SUBFOLDER
+            value: /pygeoapi/resultlinks/
+          - name: PUBLISH_JSON_ACL
+            value: public-read
+        resources: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+  arguments: {}
+  serviceAccountName: argo-workflow
+  imagePullSecrets:
+    - name: flux-cerulean

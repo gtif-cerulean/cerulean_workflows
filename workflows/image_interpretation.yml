@@ -1,0 +1,499 @@
+metadata:
+  name: dmi-asip-seaice-mosaic-daily
+  namespace: cif
+spec:
+  workflowSpec:
+    templates:
+      - name: main
+        inputs: {}
+        outputs: {}
+        metadata: {}
+        steps:
+          - - name: download-nc-file
+              template: download-nc
+              arguments: {}
+          - - name: extract-sic
+              template: extract-cog
+              arguments:
+                parameters:
+                  - name: variable
+                    value: sic
+                  - name: output-file
+                    value: sic_cog_3411.tif
+          - - name: extract-sod
+              template: extract-cog
+              arguments:
+                parameters:
+                  - name: variable
+                    value: sod
+                  - name: output-file
+                    value: sod_cog_3411.tif
+          - - name: extract-flz
+              template: extract-cog
+              arguments:
+                parameters:
+                  - name: variable
+                    value: flz
+                  - name: output-file
+                    value: flz_cog_3411.tif
+          - - name: ingest-to-eoapi
+              template: ingest
+              arguments: {}
+      - name: download-nc
+        inputs: {}
+        outputs:
+          artifacts:
+            - name: nc-file
+              path: /output/
+              s3:
+                endpoint: obs.eu-nl.otc.t-systems.com
+                bucket: gtif-data-cerulean1
+                accessKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: username
+                secretKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: password
+                key: dmi-asip-seaice-mosaic/workflows/{{workflow.uid}}/nc-file/
+              archive:
+                none: {}
+        metadata: {}
+        container:
+          name: ""
+          image: python:3.11-slim
+          command:
+            - /bin/bash
+            - -c
+          args:
+            - >
+              set -e
+
+              set -x
+
+
+              python -m pip install --no-cache-dir -U pip copernicusmarine
+
+
+              which copernicusmarine
+
+              copernicusmarine --version
+
+
+              mkdir -p /output cd /output
+              PRODUCT_ID="SEAICE_ARC_PHY_AUTO_L3_MYNRT_011_023"
+
+
+
+              DATASET_ID="cmems_obs-si_arc_phy_nrt_l3_P1D"
+
+              echo "Resolved DATASET_ID=${DATASET_ID}"
+
+              FOUND=0
+
+              for back in 0 1 2 3 4 5 6 7 8 9; do
+                d=$(date -u -d "-${back} day" +%Y%m%d)
+                y=$(date -u -d "-${back} day" +%Y)
+                m=$(date -u -d "-${back} day" +%m)
+
+                NC_FILE="dmi_asip_seaice_mosaic_arc_l3_${d}.nc"
+                FILTER="*${y}/${m}/*${NC_FILE}*"
+
+                echo "Attempt back=${back}: ${NC_FILE}"
+                echo "Filter: ${FILTER}"
+
+                if copernicusmarine get \
+                    --username dsantillan \
+                    --password 6WjM68X6DizNHujRBeqv \
+                    -i "${DATASET_ID}" \
+                    --filter "${FILTER}" \
+                    -o /output \
+                    --overwrite; then
+
+                  FOUND_PATH=$(find /output -type f -name "${NC_FILE}" -print -quit || true)
+                  if [ -n "${FOUND_PATH}" ]; then
+                    cp -f "${FOUND_PATH}" "/output/${NC_FILE}"
+                    echo "${NC_FILE}" > /output/nc_filename.txt
+                    FOUND=1
+                    break
+                  fi
+                fi
+              done
+
+              if [ "${FOUND}" -ne 1 ]; then
+                echo "ERROR: Download ran but expected file not found in /output."
+                echo "Tip: dataset-id or filter may be wrong; print listing with --dry-run / response-fields."
+                exit 1
+              fi
+
+
+              ls -lah /output
+          env:
+            - name: COPERNICUSMARINE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: cmems
+                  key: username
+            - name: COPERNICUSMARINE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cmems
+                  key: password
+          resources: {}
+      - name: extract-cog
+        inputs:
+          parameters:
+            - name: variable
+            - name: output-file
+          artifacts:
+            - name: nc-file
+              path: /input/
+              s3:
+                endpoint: obs.eu-nl.otc.t-systems.com
+                bucket: gtif-data-cerulean1
+                accessKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: username
+                secretKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: password
+                key: dmi-asip-seaice-mosaic/workflows/{{workflow.uid}}/nc-file/
+        outputs:
+          artifacts:
+            - name: cog-output
+              path: /output/
+              s3:
+                endpoint: obs.eu-nl.otc.t-systems.com
+                bucket: gtif-data-cerulean1
+                accessKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: username
+                secretKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: password
+                key: dmi-asip-seaice-mosaic/workflows/{{workflow.uid}}/cogs/
+              archive:
+                none: {}
+        metadata: {}
+        container:
+          name: ""
+          image: registry.gitlab.eox.at/public-images/gdal/ubuntu-full-3.10
+          command:
+            - sh
+            - -c
+          args:
+            - >
+              set -e
+
+              mkdir -p /output
+
+
+              # Read the NC filename
+
+              NC_FILE=$(cat /input/nc_filename.txt)
+
+
+              echo "Extracting {{inputs.parameters.variable}} from
+              ${NC_FILE}..."
+
+              OUT="/output/{{inputs.parameters.output-file}}"
+
+              gdalwarp -geoloc -co BIGTIFF=YES -s_srs EPSG:4326 -t_srs EPSG:3411
+              -tr 500 500 -r bilinear -of COG -co COMPRESS=LZW -wm 8000 -multi
+              "NETCDF:/input/${NC_FILE}:{{inputs.parameters.variable}}" "${OUT}"
+
+              echo "Extraction complete: ${OUT}"
+
+              ls -lh /output/
+          resources:
+            limits:
+              cpu: "1"
+              memory: 8Gi
+            requests:
+              cpu: 400m
+              memory: 2Gi
+      - name: ingest
+        inputs:
+          parameters:
+            - name: object_storage_folder
+              value: dmi-asip-seaice-mosaic/workflows/{{workflow.uid}}/cogs/
+          artifacts:
+            - name: nc-file
+              path: /input/
+              s3:
+                endpoint: obs.eu-nl.otc.t-systems.com
+                bucket: gtif-data-cerulean1
+                accessKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: username
+                secretKeySecret:
+                  name: gtif-data-cerulean1-bucket
+                  key: password
+                key: dmi-asip-seaice-mosaic/workflows/{{workflow.uid}}/nc-file/
+        outputs: {}
+        metadata: {}
+        script:
+          name: Ingest COGs from subpath on a bucket to collection
+          image: ghcr.io/eoxhub-workspaces/helpers:0.0.3
+          command:
+            - python
+          env:
+            - name: CPL_DEBUG
+              value: "YES"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: gtif-data-cerulean1-bucket
+                  key: username
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gtif-data-cerulean1-bucket
+                  key: password
+            - name: AWS_S3_ENDPOINT
+              value: obs.eu-nl.otc.t-systems.com
+            - name: AWS_REGION
+              value: eu-nl
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: eoapi-db
+                  key: dbname
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: eoapi-db
+                  key: user
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: eoapi-db
+                  key: password
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: eoapi-db
+                  key: host
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: eoapi-db
+                  key: port
+            - name: OBJECT_STORAGE_FOLDER_PASSTHROUGH
+              value: "{{inputs.parameters.object_storage_folder}}"
+          resources: {}
+          source: >
+            import os
+
+            import re
+
+            import boto3
+
+            import json
+
+            import tempfile
+
+            import subprocess
+
+            from datetime import datetime
+
+            from pathlib import Path
+
+
+            def create_collection(collection_id: str):
+                """Load STAC Collection into PGSTAC via pypgstac CLI."""
+                collection_json = {
+                    "type": "Collection",
+                    "id": collection_id,
+                    "stac_version": "1.0.0",
+                    "description": collection_id,
+                    "links": [
+                        {
+                            "rel": "self",
+                            "href": f"./collections/{collection_id}",
+                            "type": "application/json",
+                        }
+                    ],
+                    "extent": {
+                        "spatial": {"bbox": [[-180.0, 40.0, 180.0, 90.0]]},
+                        "temporal": {"interval": [["2025-12-30T00:00:00Z", None]]},
+                    },
+                    "license": "proprietary",
+                }
+                with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as tmp:
+                    json.dump(collection_json, tmp)
+                    tmp.flush()
+                    subprocess.run(
+                        [
+                            "pypgstac",
+                            "load",
+                            "collections",
+                            tmp.name,
+                            "--method",
+                            "insert_ignore",  # optional, avoids duplicates
+                        ],
+                        check=True,
+                    )
+
+                    print(f"Collection '{collection_id}' loaded into pgstac")
+
+
+            def extract_datetime(datetime_str: str, dt_format: str | None =
+            None):
+                """Extract datetime from filename using user-specified or auto-detected format."""
+                if dt_format:
+                    try:
+                        return datetime.strptime(datetime_str, dt_format)
+                    except ValueError:
+                        pass
+
+                patterns = [
+                    r"(\d{8})",  # 20250113
+                    r"(\d{4}-\d{2}-\d{2})",
+                    r"(\d{4}_\d{2}_\d{2})",
+                ]
+                for p in patterns:
+                    match = re.search(p, datetime_str)
+                    if match:
+                        s = match.group(1).replace("_", "-")
+                        try:
+                            return datetime.fromisoformat(s)
+                        except ValueError:
+                            try:
+                                return datetime.strptime(s, "%Y%m%d")
+                            except Exception:
+                                continue
+                raise ValueError(f"Could not extract datetime from {datetime_str}")
+
+
+            def list_tif_files(bucket: str, prefix: str):
+                """List all .tif or .tiff files under the given prefix in an S3-compatible bucket."""
+                session = boto3.session.Session()
+                s3 = session.client(
+                    service_name="s3",
+                    region_name=os.getenv("AWS_REGION"),
+                    endpoint_url=f"https://{os.getenv('AWS_S3_ENDPOINT')}",
+                    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID_LIST"),
+                    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY_LIST"),
+                )
+                paginator = s3.get_paginator("list_objects_v2")
+                tif_files = []
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        key = obj["Key"]
+                        if key.lower().endswith((".tif", ".tiff")):
+                            tif_files.append(f"s3://{bucket}/{key}")
+                return tif_files
+
+
+            def create_stac_item(
+                tif_url: str, datetime_obj: datetime, asset_name: str | None, product_id: str | None
+            ):
+                """Use rio-stac to generate a STAC Item from a GeoTIFF."""
+                with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+                    identifier = product_id or Path(tif_url).stem
+                    cmd = [
+                        "rio",
+                        "stac",
+                        tif_url,
+                        "--id",
+                        identifier,
+                        "--datetime",
+                        datetime_obj.isoformat(),
+                        "--asset-href",
+                        tif_url,
+                        "--output",
+                        tmp.name,
+                    ]
+                    if asset_name:
+                        cmd.extend(["--asset-name", asset_name])
+                    process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    )
+                    with process.stdout:
+                        for line in iter(process.stdout.readline, b""):
+                            print(line.decode("utf-8").strip())
+                    with open(tmp.name) as f:
+                        item = json.load(f)
+                return item
+
+
+            def group_ice_files(files: list[str]):
+                """Group files by sic/sod/floe."""
+                groups = {}
+                pattern = re.compile(r".*(flz|sic|sod)_cog_3411\.tif$")
+                for f in files:
+                    m = pattern.match(f)
+                    if not m:
+                        continue
+                    type = m.groups()[0]
+                    # choose the grouping key
+                    groups[type] = f
+                return groups
+
+
+            def load_to_pgstac(item: dict, collection: str):
+                """Load STAC Item into PGSTAC via pypgstac CLI."""
+                item["collection"] = collection
+                with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as tmp:
+                    json.dump(item, tmp)
+                    tmp.flush()
+                    cmd = [
+                        "pypgstac",
+                        "load",
+                        "items",
+                        tmp.name,
+                        "--method",
+                        "upsert",
+                    ]
+                    subprocess.run(cmd, check=True)
+
+            tif_files = list_tif_files("gtif-data-cerulean1",
+            os.getenv("OBJECT_STORAGE_FOLDER_PASSTHROUGH"))
+
+            print(f"Found {len(tif_files)} .tif files")
+
+            collection_id = "asip-seaice"
+
+            FILENAME_TO_GET_DATETIME_STRING ="/input/nc_filename.txt"
+
+            with open(FILENAME_TO_GET_DATETIME_STRING) as f:
+                original_filename = f.read()
+
+            dt = extract_datetime(original_filename, "%Y%m%d")
+
+            product_id = dt.strftime("%Y%m%d")
+
+            create_collection(collection_id)
+
+            product_groups = group_ice_files(tif_files)
+
+            item = create_stac_item(product_groups['flz'], dt, 'flz',
+            product_id)
+
+            item_sic = create_stac_item(product_groups['sic'], dt, 'sic',
+            product_id)
+
+            item_sod = create_stac_item(product_groups['sod'], dt, 'sod',
+            product_id)
+
+            item["assets"]["sic"] = item_sic["assets"]["sic"]
+
+            item["assets"]["sod"] = item_sod["assets"]["sod"]
+
+            load_to_pgstac(item, collection_id)
+
+            print(f"Ingested {product_id} with assets {item["assets"]}")
+    entrypoint: main
+    arguments: {}
+    serviceAccountName: argo-workflow
+    imagePullSecrets:
+      - name: flux-cerulean
+  schedules:
+    - 31 7 * * *
+status:
+  active: null
+  lastScheduledTime: "2026-03-12T07:31:00Z"
+  conditions: null
+  succeeded: 75
+  failed: 47
+  phase: Active

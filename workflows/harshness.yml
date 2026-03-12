@@ -1,0 +1,226 @@
+metadata:
+  name: create-harshness-0.5
+  namespace: cif
+spec:
+  templates:
+    - name: execute
+      inputs:
+        parameters:
+          - name: start_year
+          - name: end_year
+          - name: data_dir
+          - name: wave_height_thresh
+          - name: sea_ice_concentration_thresh
+          - name: formula
+          - name: x_resolution
+          - name: y_resolution
+          - name: lon_min
+          - name: lat_min
+          - name: lon_max
+          - name: lat_max
+          - name: clean
+      outputs: {}
+      metadata: {}
+      steps:
+        - - name: step1
+            template: harshness
+            arguments:
+              parameters:
+                - name: start_year
+                  value: "{{inputs.parameters.start_year}}"
+                - name: end_year
+                  value: "{{inputs.parameters.end_year}}"
+                - name: data_dir
+                  value: "{{inputs.parameters.data_dir}}"
+                - name: wave_height_thresh
+                  value: "{{inputs.parameters.wave_height_thresh}}"
+                - name: sea_ice_concentration_thresh
+                  value: "{{inputs.parameters.sea_ice_concentration_thresh}}"
+                - name: formula
+                  value: "{{inputs.parameters.formula}}"
+                - name: x_resolution
+                  value: "{{inputs.parameters.x_resolution}}"
+                - name: y_resolution
+                  value: "{{inputs.parameters.y_resolution}}"
+                - name: lon_min
+                  value: "{{inputs.parameters.lon_min}}"
+                - name: lat_min
+                  value: "{{inputs.parameters.lat_min}}"
+                - name: lon_max
+                  value: "{{inputs.parameters.lon_max}}"
+                - name: lat_max
+                  value: "{{inputs.parameters.lat_max}}"
+                - name: clean
+                  value: "{{inputs.parameters.clean}}"
+        - - name: step2
+            template: s3list
+            arguments: {}
+    - name: harshness
+      inputs:
+        parameters:
+          - name: start_year
+          - name: end_year
+          - name: data_dir
+          - name: wave_height_thresh
+          - name: sea_ice_concentration_thresh
+          - name: formula
+          - name: x_resolution
+          - name: y_resolution
+          - name: lon_min
+          - name: lat_min
+          - name: lon_max
+          - name: lat_max
+          - name: clean
+        artifacts:
+          - name: message
+            path: /data/
+            mode: 438
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: output-target
+      outputs:
+        artifacts:
+          - name: message1
+            path: /data/harshness_maps/
+            s3:
+              endpoint: obs.eu-nl.otc.t-systems.com
+              bucket: gtif-data-cerulean1
+              accessKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: username
+              secretKeySecret:
+                name: gtif-data-cerulean1-bucket
+                key: password
+              key: output-harshness/{{workflow.name}}
+            archive:
+              none: {}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: swr.eu-nl.otc.t-systems.com/gtif/harshness:0.5
+        command:
+          - python
+        args:
+          - -m
+          - create_harshness_map
+          - --start_year={{workflow.parameters.start_year}}
+          - --end_year={{workflow.parameters.end_year}}
+          - --data_dir={{workflow.parameters.data_dir}}
+          - --variables=siconc,VHM0,ibc
+          - --thresholds={{workflow.parameters.wave_height_thresh}},{{workflow.parameters.sea_ice_concentration_thresh}},None
+          - --formula={{workflow.parameters.formula}}
+          - --x_resolution={{workflow.parameters.x_resolution}}
+          - --y_resolution={{workflow.parameters.y_resolution}}
+          - --lon_min={{workflow.parameters.lon_min}}
+          - --lat_min={{workflow.parameters.lat_min}}
+          - --lon_max={{workflow.parameters.lon_max}}
+          - --lat_max={{workflow.parameters.lat_max}}
+        resources:
+          limits:
+            cpu: "4"
+            ephemeral-storage: 7Gi
+            memory: 8Gi
+          requests:
+            cpu: "2"
+            ephemeral-storage: 1Gi
+            memory: 4Gi
+        volumeMounts:
+          - name: out
+            mountPath: /data/harshness_maps/
+      volumes:
+        - name: out
+          emptyDir: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+    - name: s3list
+      inputs: {}
+      outputs:
+        parameters:
+          - name: json
+            valueFrom:
+              path: /tmp/out.json
+            globalName: urls
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cce.cloud.com/cce-nodepool
+                    operator: In
+                    values:
+                      - user
+      metadata: {}
+      container:
+        name: ""
+        image: ghcr.io/eoxhub-workspaces/process-s3-files:0.0.12
+        command:
+          - sh
+          - -c
+        args:
+          - ./process_s3_files.sh
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: username
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: gtif-data-cerulean1-bucket
+                key: password
+          - name: AWS_S3_ENDPOINT
+            value: https://obs.eu-nl.otc.t-systems.com
+          - name: AWS_REGION
+            value: eu-nl
+          - name: BUCKET
+            value: gtif-data-cerulean1
+          - name: BPATH
+            value: output-harshness/{{workflow.name}}
+          - name: ACL
+            value: public-read
+          - name: NUM_FILES
+            value: "1"
+          - name: DEBUG
+            value: "false"
+          - name: PUBLISH_JSON
+            value: "true"
+          - name: PUBLISH_JSON_FILENAME_ENV_VAR
+            value: ARGO_NODE_ID
+          - name: PUBLISH_JSON_FILENAME_REGEX
+            value: (pygeoapi-job-)([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12})
+          - name: PUBLISH_JSON_FILENAME_REGEX_MATCH_GROUP
+            value: "2"
+          - name: PUBLISH_JSON_SUBFOLDER
+            value: /pygeoapi/resultlinks/
+          - name: PUBLISH_JSON_ACL
+            value: public-read
+        resources: {}
+      tolerations:
+        - key: hub.jupyter.org_dedicated
+          operator: Equal
+          value: user
+          effect: NoSchedule
+  arguments: {}
+  serviceAccountName: argo-workflow
+  imagePullSecrets:
+    - name: flux-cerulean
